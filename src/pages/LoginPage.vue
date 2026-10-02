@@ -1,25 +1,44 @@
 <template>
   <div class="wrapper">
-    <v-sheet width="300" class="mx-auto login-block">
+    <v-sheet width="360" class="mx-auto login-block">
       <h1 class="login-block-h1">Admin Panel</h1>
-      <v-form fast-fail @submit.prevent>
+      <p v-if="step === 'setup'" class="login-help">
+        Scan this QR with <b>Google Authenticator</b> (or type the secret), then enter the 6-digit code. Codes change every 30 seconds.
+      </p>
+      <p v-else-if="step === 'otp'" class="login-help">
+        Enter the 6-digit code from Google Authenticator.
+      </p>
+      <v-form fast-fail @submit.prevent="login()">
         <v-text-field
+          v-if="step === 'credentials'"
           v-model="user"
           label="Login"
         ></v-text-field>
 
         <v-text-field
+          v-if="step === 'credentials'"
           v-model="pass"
           label="Password"
           type="password"
         ></v-text-field>
 
+        <div v-if="step === 'setup'" class="setup-block">
+          <img v-if="qrDataUrl" :src="qrDataUrl" alt="Google Authenticator QR" class="qr-img" />
+          <div class="secret-label">Secret (if you cannot scan)</div>
+          <div class="secret-key">{{ secret }}</div>
+        </div>
+
         <v-text-field
+          v-if="step === 'setup' || step === 'otp'"
           v-model="code"
-          label="2FA code"
+          label="6-digit code"
+          autocomplete="one-time-code"
+          inputmode="numeric"
         ></v-text-field>
 
-        <v-btn block class="mt-2" variant="tonal" @click="login()">Submit</v-btn>
+        <v-btn block class="mt-2" variant="tonal" type="submit" @click="login()">
+          {{ submitLabel }}
+        </v-btn>
       </v-form>
     </v-sheet>
   </div>
@@ -37,8 +56,9 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import axios from 'axios'
+import qrcode from 'qrcode-generator'
 import localConfig from "@/local_config"
 import { useRouter } from 'vue-router'
 import { findErrMessage } from "@/plugins/helpers"
@@ -46,20 +66,68 @@ const apiKey = localConfig.api
 const user = ref("")
 const pass = ref("")
 const code = ref("")
+const secret = ref("")
+const otpauthUrl = ref("")
+const qrDataUrl = ref("")
+const step = ref("credentials")
 const alert = ref(false)
 const alertText = ref('')
 const router = useRouter()
+
+const submitLabel = computed(() => {
+  if (step.value === "setup") return "Verify and enable 2FA"
+  if (step.value === "otp") return "Sign in"
+  return "Continue"
+})
+
+const makeQr = (url) => {
+  const qr = qrcode(0, "M")
+  qr.addData(url)
+  qr.make()
+  qrDataUrl.value = qr.createDataURL(6, 4)
+}
+
+const finishLogin = (data) => {
+  localStorage.setItem("jwt_token", data.access_token)
+  router.push({path: '/page/dashboard'})
+}
+
 const login = async () => {
   try {
     const response = await axios.post(`${apiKey}login/`, {
       username: user.value,
       password: pass.value,
       otp_token: code.value
-      
-    });    
-    localStorage.setItem("jwt_token", response.data.access_token)
-    router.push({path: '/page/dashboard'})
+    });
+    const data = response.data || {}
+    if (data.status === true && data.access_token) {
+      finishLogin(data)
+      return
+    }
+    if (data.otp_setup_required) {
+      step.value = "setup"
+      secret.value = data.secret || ""
+      otpauthUrl.value = data.otpauth_url || ""
+      code.value = ""
+      if (otpauthUrl.value) makeQr(otpauthUrl.value)
+      return
+    }
+    if (data.otp_required) {
+      step.value = "otp"
+      code.value = ""
+      return
+    }
+    showAlert({ response: { data } })
   } catch (error) {
+    const data = error?.response?.data || {}
+    if (data.otp_setup_required) {
+      step.value = "setup"
+      secret.value = data.secret || secret.value
+      otpauthUrl.value = data.otpauth_url || otpauthUrl.value
+      if (otpauthUrl.value) makeQr(otpauthUrl.value)
+    } else if (data.otp_required) {
+      step.value = "otp"
+    }
     showAlert(error)
   }
 }
@@ -109,5 +177,34 @@ label {
   font-weight: bold;
   padding-bottom: 10px;
   text-align: center;
+}
+.login-help {
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 16px;
+  line-height: 1.4;
+  text-align: center;
+}
+.setup-block {
+  text-align: center;
+  margin-bottom: 12px;
+}
+.qr-img {
+  width: 180px;
+  height: 180px;
+  background: #fff;
+  padding: 8px;
+  border-radius: 4px;
+}
+.secret-label {
+  font-size: 12px;
+  color: #777;
+  margin-top: 10px;
+}
+.secret-key {
+  font-family: monospace;
+  font-size: 13px;
+  word-break: break-all;
+  margin: 6px 0 12px;
 }
 </style>
